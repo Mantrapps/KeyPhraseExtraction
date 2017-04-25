@@ -7,6 +7,12 @@ By kai
 '''
 import sys
 import re
+#from __future__ import print_function
+from sklearn.feature_extraction.text import  CountVectorizer
+from sklearn.datasets import fetch_20newsgroups
+import numpy as np
+import lda
+import os
 
 fileList=""
 goldKeyList=""
@@ -48,6 +54,12 @@ srScore=dict()
 # Map<String, List<Long>>
 position=dict()
 
+#paramaters for LDA
+n_samples = 2000
+n_features = 1000
+n_topics = 10
+n_top_words = 20
+
 def readFiles(version, file):
     obj=open(file,'r')
     lines=obj.readlines()
@@ -55,6 +67,7 @@ def readFiles(version, file):
     for x in lines:
         if(version==1):
             files.append(x)
+            #print(x)
             docCount+=1
         if(version==2):
             keyList.append(x)
@@ -83,16 +96,13 @@ def readTxtFiles(version,file, paperID):
         token=x.split(" ")
         #remove empty string
         token=filter(None,token)
-
         if len(token)>0:
             for i in range(0, len(token)):
                 index=-1
                 index=token[i].rfind('/')
                 word = token[i][:index].strip().lower()
-                #print word," ",token[i]," ", index
                 pos = token[i][index+1:]
-
-                if (index==-1) or(len(word)>=2 and (word[0]=="<" or word[len(word)-1]==">")):
+                if (index==-1) or (len(word)>=2 and (word[0]=="<" or word[len(word)-1]==">")):
                     continue
                 if(version==1):
                     #store
@@ -218,29 +228,33 @@ def buildGraph():
     normalize()
 
 def initialize():
-    global srGraph,position, srScore
+    global srGraph,position, srScore,n_topics
     for k,v in  srGraph.items():
-        if(k in position):
-            srScore[k]=1.0
+        if k in position:
+            srScore[k]=dict()
+            for i in range(0,n_topics):
+                srScore[k][i]=1.0/n_topics
 
 
 def singleRank():
-    global  srScore,iteration, nodeCount,srGraph
+    global  srScore,iteration, nodeCount,srGraph,ldaModel
     initialize()
-
     for it in range(1,iteration+1):
         srScoreTemp = dict()
         for key,value in srScore.items():
-            word=key
-            score=0.0
-            for k,v in srGraph[word].items():
-                neighbor=k
-                if neighbor!="":
-                    score+=srGraph[neighbor][word] * srScore[neighbor]
-            score*=0.85
-            score+=(0.15/(1.0*nodeCount))
-
-            srScoreTemp[word]=score
+            #mark
+            srScoreTemp[key]=dict()
+            for topic, val in value.items():
+                word=key
+                score=0.0
+                for k,v in srGraph[word].items():
+                    neighbor=k
+                    if neighbor!="":
+                        score+=srGraph[neighbor][word] * srScore[neighbor][topic]
+                score *=0.85
+                score += (0.15 / (1.0 * nodeCount))
+                #score+=(0.15/(1.0 * ldaModel.topic_word_[topic][1]))
+                srScoreTemp[word][topic] = score
         srScore.clear()
         srScore=srScoreTemp
         #srScoreTemp.clear()
@@ -300,7 +314,9 @@ def getTotalScore(s):
     d=0.0
     for i in range(0,len(tokens)):
         if(tokens[i] in srScore):
-            d+= srScore[tokens[i]]
+            for topic, val in srScore[tokens[i]].items():
+                #build
+                d+= val
     return d
 
 def replaceLowest(topKey, topKeyVal, key, val):
@@ -317,7 +333,7 @@ def replaceLowest(topKey, topKeyVal, key, val):
     if val>minVal:
         topKey[index]=key
         topKeyVal[index]=val
-    #print len(topKey)
+
     return topKey, topKeyVal
 
 def isGoldKey(key):
@@ -338,26 +354,81 @@ def score(file):
 
     topKey=list() # string list
     topKeyVal=list() # double list
+
     extractPatterns(candClause)
+
     for key, val in candClause.items():
         if val>0:
             s=key
             score=getTotalScore(s)
 
-            if len(topKey) < int(keyCount):
+            if( len(topKey)< int(keyCount)):
                 topKey.append(s)
                 topKeyVal.append(score)
             else:
                 topKey, topKeyVal=replaceLowest(topKey,topKeyVal,s,score)
 
-
     predicated+= len(topKey)
 
     for i in range(0,len(topKey)):
         pkey=topKey[i]
-        obj.write(pkey+'\n')
-        if(isGoldKey(pkey) or isGoldKey(pkey+'s') or (pkey[len(pkey)-1]=='s' and isGoldKey(pkey[:len(pkey)-1]))):
+        obj.write(pkey)
+        if(isGoldKey(pkey) or isGoldKey(pkey+"s") or (pkey[len(pkey)-1]=='s' and isGoldKey(pkey[:len(pkey)-1]))):
             matched+=1
+
+
+
+
+
+
+def textExtract(doc):
+#	print("Currently loading " + doc)
+	result = ""
+	with open(doc) as d:
+		for line in d:
+		    result += line
+        #print(result)
+	return result
+
+#read documents in certain directory
+def computLda(fileList):
+    global n_samples ,n_features,n_topics,n_top_words
+    myPath = "DucRaw"
+    allTextDoc = [myPath + '/' + f.replace(".pos\n",".txt") for f in fileList ]
+    #allTextDoc = [myPath + '/' + f for f in fileList]
+    #print(allTextDoc)
+
+
+    allText = []
+    for text in allTextDoc:
+        print text
+        result = textExtract(text)
+        allText.append(result)
+
+    print "Extracting tf features for LDA..."
+    tf_vectorizer = CountVectorizer(max_df=0.95, min_df=2,
+                                    max_features=n_features,
+                                    stop_words='english')
+    tf = tf_vectorizer.fit_transform(allText)
+
+    print("Fitting LDA models with tf features, "
+          "n_samples=%d and n_features=%d..."
+          % (n_samples, n_features))
+    model= lda.LDA(n_topics=n_topics,n_iter=5,random_state=1)
+    model.fit(tf)
+
+    tf_feature_names = tf_vectorizer.get_feature_names()
+    print tf_feature_names
+    wordIndex={}
+    for i in range(len(tf_feature_names)):
+        wordIndex[tf_feature_names[i]]=i
+    #print model.topic_word_
+    #print model.doc_topic_
+
+
+
+    return model
+
 
 
 def main(arg):
@@ -367,12 +438,13 @@ def main(arg):
     '''
     print "Reading params..."
     #reading params
-    global  fileList, goldKeyList,fileDir,goldKeyDir,outputDir,keyCount,windowSize,matched,predicated,totalKey
-    fileList, goldKeyList, fileDir, goldKeyDir, outputDir, keyCount, windowSize=readParams(arg[1])
+    global  fileList, goldKeyList,fileDir,goldKeyDir,outputDir,keyCount,windowSize,matched,predicated,totalKey,ldaModel
+    fileList, goldKeyList, fileDir, goldKeyDir, outputDir, keyCount, windowSize=readParams(arg)
 
     global  files
     #read document
     readFiles(1,fileList)
+    ldaModel = computLda(files)
     #read gold key file list
     if goldKeyList!="":
         readFiles(2,goldKeyList)
@@ -390,6 +462,7 @@ def main(arg):
             key=goldKeyDir+keyList[i]
             readGoldKey(key.rstrip(),i)
 
+
         buildGraph()
         singleRank()
 
@@ -403,12 +476,20 @@ def main(arg):
     r=(100.0*matched) / (1.0*totalKey)
     f= (2.0*p*r)/(p+r)
 
-    print "Recall= ", r , matched, predicated
+    print "matched= ",matched
+    print "predicated= ",predicated
+    print "totalKey= ",totalKey
+
+    print "Recall= ", r
     print "Precision= ", p
     print "F-Score= ", f
     print "done"
 
 
 
+
+
+
+
 if __name__ == '__main__':
-   main(sys.argv)
+    main('conf.txt')
